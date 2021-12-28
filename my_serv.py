@@ -7,8 +7,12 @@
 
 import socket # low-level networking interface (as per documentation)
 import sys    # to run the script with parameters (sys.args[])
+from email.parser import Parser # parse http request headers
+from functools import lru_cache
+from urllib.parse import urlparse, parse_qs
 
 MAX_LINE = 64*1024
+MAX_HEADERS = 100
 
 class MyHTTPServer:
 
@@ -38,7 +42,9 @@ class MyHTTPServer:
 
     def serve_client(self, conn):
         try:
+            print('before parse_request')
             req = self.parse_request(conn)
+            print('after parse_request')
             resp = self.handle_request(conn)
             self.send_reponse(conn, resp)
         except ConnectionResetError: # 'connection reset by peer' ??
@@ -47,7 +53,21 @@ class MyHTTPServer:
             self.send_error(conn, e)
 
     def parse_request(self, conn):
+        print('parse_request entered')
         rfile = conn.makefile('rb') # r - read mode, b - binary format
+        method, target, ver = self.parse_request_line(rfile)
+        headers = self.parse_headers(rfile  )
+        host = headers.get('Host')
+        if not host:
+            raise Exception('Bad request - no host defined')
+        if host not in (self._server_name, f'{self._server_name}:{self._port}'):
+            print('Enter Host not found exception')
+            raise Exception('Host not found')
+        print('parse_request completed')
+        return Requests(method, target, ver, headers, rfile)
+    
+    def parse_request_line(self, rfile):
+        print('parse_request_line entered')
         raw = rfile.readline(MAX_LINE + 1) # first line of the request
         if len(raw) > MAX_LINE:
             raise Exception('Line is too long')
@@ -61,11 +81,27 @@ class MyHTTPServer:
         method, target, ver = words
         if ver != 'HTTP/1.1':
             raise Exception("Unexpectet HTTP version")
+        print('parse_request_line completed')
+        return method, target, ver
 
-        return Requests(method, target, ver, rfile)
+    def parse_headers(self, rfile):
+        print('parse_headers entered')
+        headers = []
+        while True:
+            line = rfile.readline(MAX_LINE + 1) # begin with 2nd line, 1st already read in parse_request_line() ('sequential read')
+            if len(line) > MAX_LINE:
+                raise Exception('Header is too long')
+            if line in (b'\r\n', b'\n', b''):
+                break
+            headers.append(line)
+            if len(headers) > MAX_HEADERS:
+                raise Exception('Too many headers')
+
+        sheaders = b''.join(headers).decode('iso-8859-1')
+        print('parse_headers completed')
+        return Parser().parsestr(sheaders)
 
     def handle_request(self, req):
-    # TODO : https://iximiuz.com/ru/posts/writing-python-web-server-part-3/    
         pass
 
     def send_reponse(self, conn, resp):
@@ -75,11 +111,16 @@ class MyHTTPServer:
         pass
 
 class Request:
-    def __init__(self, method, target, ver, rfile):
+    def __init__(self, method, target, ver, parse_headers, rfile):
         self.method = method
         self.target = target
         self.ver = ver
+        self.headers = parse_headers
         self.rfile = rfile
+    @property
+    @lru_cache
+    def url(self):
+        return urlparse(self.target)
 
 
 def main():
